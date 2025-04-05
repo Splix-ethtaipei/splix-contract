@@ -2,7 +2,80 @@
 pragma solidity ^0.7.0;
 pragma abicoder v2;
 
+import {IReceiverV2} from "../lib/evm-cctp-contracts/src/interfaces/v2/IReceiverV2.sol";
+import {TypedMemView} from "../lib/memview-sol/contracts/TypedMemView.sol";
+import {MessageV2} from "../lib/evm-cctp-contracts/src/messages/v2/MessageV2.sol";
+import {BurnMessageV2} from "../lib/evm-cctp-contracts/src/messages/v2/BurnMessageV2.sol";
+import {Ownable2Step} from "../lib/evm-cctp-contracts/src/roles/Ownable2Step.sol";
+import {IERC20} from "./interfaces/IERC20.sol";
+
 contract ReceiptStorage {
+    // ============ Constants ============
+    // Address of the local message transmitter
+    IReceiverV2 public immutable messageTransmitter;
+
+    // Address of the USDC token
+    IERC20 public immutable usdcToken;
+
+    // chain flag
+    enum ChainFlag {
+        MAINNET,
+        SEPOLIA,
+        POLYGON_POS,
+        POLYGON_POS_AMOY
+    }
+
+    ChainFlag public immutable chainFlag;
+
+    // USDC address on different chains
+    address constant ETH_MAINNET_USDC_ADDR = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+    address constant ETH_SEPOLIA_USDC_ADDR = 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238;
+    address constant POLYGON_POS_USDC_ADDR = 0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359;
+    address constant POLYGON_POS_AMOY_USDC_ADDR = 0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582;
+
+    // The supported Message Format version
+    uint32 public constant supportedMessageVersion = 1;
+
+    // The supported Message Body version
+    uint32 public constant supportedMessageBodyVersion = 1;
+
+    // Byte-length of an address
+    uint256 internal constant ADDRESS_BYTE_LENGTH = 20;
+
+    // ============ Libraries ============
+    using TypedMemView for bytes;
+    using TypedMemView for bytes29;
+
+    // ============ Constructor ============
+    /**
+     * @param _messageTransmitter The address of the local message transmitter
+     * @param _chainFlag The chain flag
+     */
+    constructor(address _messageTransmitter, ChainFlag _chainFlag) {
+        require(_messageTransmitter != address(0), "Message transmitter is the zero address");
+
+        messageTransmitter = IReceiverV2(_messageTransmitter);
+        chainFlag = _chainFlag;
+
+        // Determine USDC address based on chain flag parameter
+        address usdcAddress;
+        if (_chainFlag == ChainFlag.MAINNET) {
+            usdcAddress = ETH_MAINNET_USDC_ADDR;
+        } else if (_chainFlag == ChainFlag.SEPOLIA) {
+            usdcAddress = ETH_SEPOLIA_USDC_ADDR;
+        } else if (_chainFlag == ChainFlag.POLYGON_POS) {
+            usdcAddress = POLYGON_POS_USDC_ADDR;
+        } else if (_chainFlag == ChainFlag.POLYGON_POS_AMOY) {
+            usdcAddress = POLYGON_POS_AMOY_USDC_ADDR;
+        } else {
+            // Default to Sepolia for safety
+            usdcAddress = ETH_SEPOLIA_USDC_ADDR;
+        }
+
+        // Initialize the immutable variable once
+        usdcToken = IERC20(usdcAddress);
+    }
+
     struct GroupInfo {
         string groupName;
         string[] items; // the items could be duplicated i.e. [apple, apple, banana, cookie]
@@ -97,6 +170,7 @@ contract ReceiptStorage {
         }
 
         require(totalPaid == amount, "Amount does not match total price of selected items");
+        require(usdcToken.balanceOf(msg.sender) == amount, "Incorrect USDC balance");
 
         // Mark items as paid
         for (uint256 i = 0; i < itemIds.length; i++) {
@@ -104,6 +178,8 @@ contract ReceiptStorage {
             groupItemHasPaidMap[_groupId][itemId] = true;
             groupItemPaidByMap[_groupId][itemId] = msg.sender;
         }
+
+        usdcToken.transferFrom(msg.sender, groupOwnerMap[_groupId], amount);
 
         emit ItemsPaid(_groupId, msg.sender, itemIds, amount);
     }
@@ -129,5 +205,58 @@ contract ReceiptStorage {
         }
 
         return (names, prices, paidStatus, paidBy);
+    }
+
+    // ============ External Functions  ============
+    /**
+     * @notice Relays a burn message to a local message transmitter
+     * and executes the hook, if present.
+     *
+     * @dev The hook data contained in the Burn Message is expected to follow this format:
+     * Field                 Bytes      Type       Index
+     * target                20         address    0
+     * hookCallData          dynamic    bytes      20
+     *
+     * The hook handler will call the target address with the hookCallData, even if hookCallData
+     * is zero-length. Additional data about the burn message is not passed in this call.
+     *
+     * @dev Reverts if not called by the Owner. Due to the lack of atomicity with the hook call, permissionless relay of messages containing hooks via
+     * an implementation like this contract should be carefully considered, as a malicious caller could use a low gas attack to consume
+     * the message's nonce without executing the hook.
+     *
+     * WARNING: this implementation does NOT enforce atomicity in the hook call. This is to prevent a failed hook call
+     * from preventing relay of a message if this contract is set as the destinationCaller.
+     *
+     * @dev Reverts if the receiveMessage() call to the local message transmitter reverts, or returns false.
+     * @param message The message to relay, as bytes
+     * @param attestation The attestation corresponding to the message, as bytes
+     * @return relaySuccess True if the call to the local message transmitter succeeded.
+     */
+    function relay(
+        bytes calldata message,
+        bytes calldata attestation,
+        uint256 _groupId,
+        uint256[] memory itemIds,
+        uint256 amount
+    ) external virtual returns (bool relaySuccess) {
+        // Validate message
+        // 0 to 29 is the msg
+        bytes29 _msg = message.ref(0);
+        MessageV2._validateMessageFormat(_msg);
+        require(MessageV2._getVersion(_msg) == supportedMessageVersion, "Invalid message version");
+
+        // Validate burn message
+        bytes29 _msgBody = MessageV2._getMessageBody(_msg);
+        BurnMessageV2._validateBurnMessageFormat(_msgBody);
+        require(BurnMessageV2._getVersion(_msgBody) == supportedMessageBodyVersion, "Invalid message body version");
+
+        // receiveMessage includes minting USDC token to destination addr(which is this contract)
+        relaySuccess = messageTransmitter.receiveMessage(message, attestation);
+        require(relaySuccess, "Receive message failed");
+
+        // update the state of these items
+        payForItems(_groupId, itemIds, amount);
+
+        return (relaySuccess);
     }
 }
