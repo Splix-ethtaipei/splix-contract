@@ -21,8 +21,8 @@ contract ReceiptStorage {
     enum ChainFlag {
         MAINNET,
         SEPOLIA,
-        POLYGON_POS,
-        POLYGON_POS_AMOY
+        AVALANCHE_C_CHAIN,
+        AVALANCHE_FUJI
     }
 
     ChainFlag public immutable chainFlag;
@@ -30,8 +30,8 @@ contract ReceiptStorage {
     // USDC address on different chains
     address constant ETH_MAINNET_USDC_ADDR = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     address constant ETH_SEPOLIA_USDC_ADDR = 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238;
-    address constant POLYGON_POS_USDC_ADDR = 0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359;
-    address constant POLYGON_POS_AMOY_USDC_ADDR = 0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582;
+    address constant AVALANCHE_C_CHAIN_USDC_ADDR = 0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E;
+    address constant AVALANCHE_FUJI_CHAIN_USDC_ADDR = 0x5425890298aed601595a70AB815c96711a31Bc65;
 
     // The supported Message Format version
     uint32 public constant supportedMessageVersion = 1;
@@ -63,10 +63,10 @@ contract ReceiptStorage {
             usdcAddress = ETH_MAINNET_USDC_ADDR;
         } else if (_chainFlag == ChainFlag.SEPOLIA) {
             usdcAddress = ETH_SEPOLIA_USDC_ADDR;
-        } else if (_chainFlag == ChainFlag.POLYGON_POS) {
-            usdcAddress = POLYGON_POS_USDC_ADDR;
-        } else if (_chainFlag == ChainFlag.POLYGON_POS_AMOY) {
-            usdcAddress = POLYGON_POS_AMOY_USDC_ADDR;
+        } else if (_chainFlag == ChainFlag.AVALANCHE_C_CHAIN) {
+            usdcAddress = AVALANCHE_C_CHAIN_USDC_ADDR;
+        } else if (_chainFlag == ChainFlag.AVALANCHE_FUJI) {
+            usdcAddress = AVALANCHE_FUJI_CHAIN_USDC_ADDR;
         } else {
             // Default to Sepolia for safety
             usdcAddress = ETH_SEPOLIA_USDC_ADDR;
